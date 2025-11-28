@@ -1,0 +1,19 @@
+# バックエンド用の環境を構築
+version: "3.12"
+
+services:
+  smart-deploy-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    command: ["python3", "src/main.py"]
+    container_name: smart-deploy-agent
+    ports:
+      - "8000:8000"   
+    volumes:
+        - ./src:/app/src
+        - ~/.aws:/root/.aws:ro
+        - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+        - AWS_PROFILE=default
