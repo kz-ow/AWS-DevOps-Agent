@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
       network: host
-    command: ["python3", "src/main.py"]
+    command: ["python3", "src/server.py"]
     container_name: smart-deploy-agent
     ports:
       - "8000:8000"   
