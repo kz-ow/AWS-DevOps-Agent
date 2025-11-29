@@ -8,3 +8,10 @@ boto3==1.41.5
 
 # Docker操作用ライブラリ
 docker==7.1.0
+
+# AWS Bedrockに接続するためのLlamaIndexプラグイン
+llama-index-llms-bedrock==0.4.2
+llama-index-embeddings-bedrock==0.7.2
+
+# API情報の管理
+pydantic-settings==2.12.0
