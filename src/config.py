@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     EMBED_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
 
     # パス設定
-    WORK_DIR: Path = Path("/app/workspace")
-    RULES_DIR: Path = Path("/app/security_rules")
+    WORK_DIR: Path = Path("/app/__output__/work_dir")
+    RULES_DIR: Path = Path("/app/src/security_rules")
     
     # FinOps設定
     MAX_MONTHLY_BUDGET: float = 20.0
