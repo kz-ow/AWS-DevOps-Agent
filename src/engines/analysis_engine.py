@@ -1,89 +1,69 @@
 import shutil
 from pathlib import Path
 from git import Repo
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
-from llama_index.llms.bedrock import Bedrock
-from llama_index.embeddings.bedrock import BedrockEmbedding
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings as LlamaSettings
+from llama_index.llms.anthropic import Anthropic
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from config import settings
 
 class AnalysisEngine:
     def __init__(self):
-        self._initialize_bedrock()
+        self._initialize_llm()
         self.rules_index = self._load_rules_index()
 
-    def _initialize_bedrock(self):
-        """Bedrockの設定 (rag_loader.py の initialize_llama_index_settings 相当)"""
-        Settings.llm = Bedrock(
-            model=settings.LLM_MODEL_ID,
-            region_name=settings.AWS_REGION
-        )
-        Settings.embed_model = BedrockEmbedding(
-            model_name=settings.EMBED_MODEL_ID,
-            region_name=settings.AWS_REGION
-        )
+    def _initialize_llm(self):
+        """Claude 3.5 Sonnet (API) + Local Embedding"""
+        print(f"🧠 Initializing AI Brain: [ Claude 3.5 Sonnet ]")
+        
+        if not settings.ANTHROPIC_API_KEY:
+            print("⚠️ ANTHROPIC_API_KEY not found. Please set it in env vars.")
+            return
+
+        try:
+            # 脳: Claude 3.5 Sonnet
+            LlamaSettings.llm = Anthropic(
+                model="claude-3-5-sonnet-20240620",
+                api_key=settings.ANTHROPIC_API_KEY
+            )
+            # 記憶: ローカルモデル (高速・無料)
+            LlamaSettings.embed_model = HuggingFaceEmbedding(
+                model_name="BAAI/bge-small-en-v1.5"
+            )
+        except Exception as e:
+            print(f"❌ AI Init Failed: {e}")
 
     def _load_rules_index(self):
-        """社内規定(security_rules)を読み込んでインデックス化"""
-        if not settings.RULES_DIR.exists():
-            print("⚠️ Security rules directory not found. Skipping rule indexing.")
-            return None
-        
-        # Markdownファイルなどを読み込む
-        documents = SimpleDirectoryReader(
-            str(settings.RULES_DIR),
-            recursive=True
-        ).load_data()
-        
-        if not documents:
-            return None
-
-        print(f"🔒 Loaded {len(documents)} security rule documents.")
-        return VectorStoreIndex.from_documents(documents)
+        if not settings.RULES_DIR.exists(): return None
+        documents = SimpleDirectoryReader(str(settings.RULES_DIR), recursive=True).load_data()
+        return VectorStoreIndex.from_documents(documents) if documents else None
 
     def clone_repository(self, repo_url: str) -> Path:
-        """Git Cloneを実行し、作業ディレクトリを返す"""
-        if settings.WORK_DIR.exists():
-            shutil.rmtree(settings.WORK_DIR)
+        if settings.WORK_DIR.exists(): shutil.rmtree(settings.WORK_DIR)
         settings.WORK_DIR.mkdir(parents=True, exist_ok=True)
-        
         print(f"📥 Cloning {repo_url}...")
         Repo.clone_from(repo_url, settings.WORK_DIR)
         return settings.WORK_DIR
 
     def analyze_context(self, project_path: Path) -> dict:
-        """
-        コードをRAG解析し、技術スタックと適用すべきルールを抽出する
-        """
-        # 1. git clone & コードのインデックス化
         print("🧠 Analyzing source code...")
-        code_documents = SimpleDirectoryReader(
-            input_dir=str(project_path),
-            recursive=True,
-            exclude=["*.git*", "*.lock", "node_modules", "__pycache__"]
+        # ノイズになるファイルを除外
+        documents = SimpleDirectoryReader(
+            input_dir=str(project_path), recursive=True, 
+            exclude=["*.git*", "*.lock", "node_modules", "__pycache__", "*.png", "*.jpg", ".DS_Store"]
         ).load_data()
         
-        code_index = VectorStoreIndex.from_documents(code_documents)
-        code_query_engine = code_index.as_query_engine()
-
-        # 2. コードの分析
-        tech_stack_info = str(code_query_engine.query(
-            "Identify the programming language, framework, and the entry point command (e.g., 'python app.py' or 'npm start') of this project. "
-            "Also list key dependencies."
+        index = VectorStoreIndex.from_documents(documents)
+        
+        # 技術スタックの特定
+        stack_info = str(index.as_query_engine().query(
+            "Identify the programming language, framework, and entry point file. List key dependencies."
         ))
-        print(f"🧐 Detected Stack: {tech_stack_info}")
+        print(f"🧐 Detected Stack: {stack_info}")
 
-        # 3. ルール検索 (技術スタックに基づいて検索)
-        security_context = "No specific rules found. Follow standard best practices."
+        # ルール検索
+        security_context = "Standard best practices."
         if self.rules_index:
-            rules_retriever = self.rules_index.as_retriever(similarity_top_k=3)
-            
-            # AIが特定したスタック名を使って、関連するルールを検索
-            nodes = rules_retriever.retrieve(f"security requirements for {tech_stack_info} dockerfile")
+            nodes = self.rules_index.as_retriever(similarity_top_k=3).retrieve(f"security requirements for {stack_info}")
             security_context = "\n".join([n.get_content() for n in nodes])
 
-        return {
-            "stack_summary": tech_stack_info,
-            "security_context": security_context,
-            # 生成AIに渡すためのファイルツリー情報も一応残しておく
-            "file_tree": [f.name for f in project_path.iterdir()]
-        }
+        return {"stack_summary": stack_info, "security_context": security_context}
