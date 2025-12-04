@@ -14,10 +14,6 @@ class AnalysisEngine:
     def _initialize_llm(self):
         """Claude 3.5 Sonnet (API) + Local Embedding"""
         print(f"🧠 Initializing AI Brain: [ Claude 3.5 Sonnet ]")
-        
-        if not settings.ANTHROPIC_API_KEY:
-            print("⚠️ ANTHROPIC_API_KEY not found. Please set it in env vars.")
-            return
 
         try:
             # LLM: Claude 3.5 Sonnet
