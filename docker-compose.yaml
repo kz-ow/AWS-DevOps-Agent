@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
       network: host
-    command: ["python3", "src/main.py"]
+    command: ["python3", "src/server.py"]
     container_name: smart-deploy-agent
     ports:
       - "8000:8000"   
@@ -17,3 +17,4 @@ services:
         - /var/run/docker.sock:/var/run/docker.sock
     environment:
         - AWS_PROFILE=default
+        - LLM_MODEL=${LLM_MODEL}

@@ -1,10 +1,25 @@
 # 依存関係の管理
 
-# MCP通信ライブラリ
-mcp==1.22.0
+# --- MCP通信ライブラリ ---
+fastmcp==2.13.2
 
-# AWS SDK
-boto3==1.41.5
+# --- API情報の管理 ---
+pydantic-settings==2.12.0
 
-# Docker操作用ライブラリ
+# --- GitHubクローン用 ---
+GitPython==3.1.41          
+
+# --- AWS SDK ---
+aiobotocore==2.13.1
+boto3
+
+# --- Docker操作用ライブラリ ---
 docker==7.1.0
+
+# --- LlamaIndex (RAG & LLM Logic) ---
+llama-index-core==0.14.8   
+llama-index-readers-file==0.5.5   
+
+# --- LlamaIndex Anthropic ---
+llama-index-llms-bedrock==0.4.2
+llama-index-embeddings-bedrock==0.7.2
