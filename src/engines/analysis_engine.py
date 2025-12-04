@@ -2,8 +2,8 @@ import shutil
 from pathlib import Path
 from git import Repo
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings as LlamaSettings
-from llama_index.llms.anthropic import Anthropic
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.bedrock import Bedrock
+from llama_index.embeddings.bedrock import BedrockEmbedding
 from config import settings
 
 class AnalysisEngine:
@@ -20,14 +20,14 @@ class AnalysisEngine:
             return
 
         try:
-            # 脳: Claude 3.5 Sonnet
-            LlamaSettings.llm = Anthropic(
-                model="claude-3-5-sonnet-20240620",
+            # LLM: Claude 3.5 Sonnet
+            LlamaSettings.llm = Bedrock(
+                model=settings.LLM_MODEL,
                 api_key=settings.ANTHROPIC_API_KEY
             )
-            # 記憶: ローカルモデル (高速・無料)
-            LlamaSettings.embed_model = HuggingFaceEmbedding(
-                model_name="BAAI/bge-small-en-v1.5"
+            # ベクトル埋め込み: AWS Bedrock Embedding
+            LlamaSettings.embed_model = BedrockEmbedding(
+                model_name="amazon.titan-embed-text-v2:0"
             )
         except Exception as e:
             print(f"❌ AI Init Failed: {e}")

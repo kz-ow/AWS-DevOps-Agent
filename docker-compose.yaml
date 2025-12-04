@@ -17,3 +17,4 @@ services:
         - /var/run/docker.sock:/var/run/docker.sock
     environment:
         - AWS_PROFILE=default
+        - LLM_MODEL=${LLM_MODEL}
