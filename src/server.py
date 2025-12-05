@@ -1,3 +1,4 @@
+import textwrap
 from fastmcp import FastMCP
 from config import settings
 from engines.analysis_engine import AnalysisEngine
@@ -38,7 +39,8 @@ def plan_deployment(repo_url: str, target: str = "local") -> str:
         f"Create a mermaid graph TD for a proposed {target} deployment of {context['stack_summary']}. Return ONLY mermaid code."
     ).text.replace("```mermaid", "").replace("```", "").strip()
 
-    return f"""
+    return textwrap.dedent(
+    f"""
     # 📋 Deployment Plan
 
     コードを分析し，デプロイ環境のアーキテクチャ図を作成しました。
@@ -47,6 +49,7 @@ def plan_deployment(repo_url: str, target: str = "local") -> str:
     ## 🏗 作成したデプロイ環境
     ```mermaid
     {diagram}
+    ```
     🛠 Configuration
     Target: {target.upper()}
 
@@ -56,6 +59,7 @@ def plan_deployment(repo_url: str, target: str = "local") -> str:
 
     ❓ 次のステップ: ユーザーに「デプロイを実行してもよろしいですか？」と尋ねてください。承認された場合は apply_deployment を呼び出してください。
     """
+    )
 
 # --- 2. 実行フェーズ (Apply) ---
 @mcp.tool()
@@ -117,8 +121,7 @@ def destroy_resources(project_name: str, target: str = "local") -> str:
         if not settings.HAS_AWS_CREDS:
             return "❌ Error: AWS Credentials missing. Cannot destroy Lambda resources."
         
-        status_msg = executor.delete_lambda_function(project_name)
-
+        status_msg = executor.cleanup_lambda(project_name)
     return f"""
     🧹 Resource Cleanup Complete!
     ・Status: {status_msg}

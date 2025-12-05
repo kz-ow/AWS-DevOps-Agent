@@ -16,5 +16,6 @@ services:
         - ~/.aws:/root/.aws:ro
         - /var/run/docker.sock:/var/run/docker.sock
     environment:
-        - AWS_PROFILE=default
+        - AWS_PROFILE=smart-deploy-agent
         - LLM_MODEL=${LLM_MODEL}
+        - GITHUB_TOKEN=${GITHUB_TOKEN}
