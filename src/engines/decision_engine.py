@@ -8,7 +8,7 @@ class DecisionEngine:
     def generate_dockerfile(self, context: dict, attempt: int, error_msg: str, target_service: str) -> str:
         """
         コンテキストとターゲット環境に基づいてDockerfileを生成する。
-        AWS Lambdaがターゲットの場合は、Web Adapterの注入を強制する。
+        ターゲットがAWS Lambdaなので，AWS Lambda Web Adapterの追加を指示する。
         """
         stack = context.get('stack_summary', 'Unknown Stack')
         rules = context.get('security_context', 'Standard best practices')

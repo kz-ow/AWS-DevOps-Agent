@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from git import Repo
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings as LlamaSettings
-from llama_index.llms.bedrock import Bedrock
+from llama_index.llms.bedrock_converse import BedrockConverse
 from llama_index.embeddings.bedrock import BedrockEmbedding
 from config import settings
 
@@ -12,18 +12,19 @@ class AnalysisEngine:
         self.rules_index = self._load_rules_index()
 
     def _initialize_llm(self):
-        """Claude 3.5 Sonnet (API) + Local Embedding"""
-        print(f"🧠 Initializing AI Brain: [ Claude 3.5 Sonnet ]")
+        """AWS Bedrock (API) + Local Embedding"""
+        print(f"🧠 Initializing AI Brain: [ {settings.LLM_MODEL} ]")
 
         try:
-            # LLM: Claude 3.5 Sonnet
-            LlamaSettings.llm = Bedrock(
+            # LLMモデル: AWS Bedrock 
+            LlamaSettings.llm = BedrockConverse(
                 model=settings.LLM_MODEL,
-                api_key=settings.ANTHROPIC_API_KEY
+                region_name=settings.AWS_REGION
             )
             # ベクトル埋め込み: AWS Bedrock Embedding
             LlamaSettings.embed_model = BedrockEmbedding(
-                model_name="amazon.titan-embed-text-v2:0"
+                model_name="amazon.titan-embed-text-v2:0",
+                region_name=settings.AWS_REGION
             )
         except Exception as e:
             print(f"❌ AI Init Failed: {e}")
@@ -36,10 +37,35 @@ class AnalysisEngine:
     def clone_repository(self, repo_url: str) -> Path:
         if settings.WORK_DIR.exists(): shutil.rmtree(settings.WORK_DIR)
         settings.WORK_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"📥 Cloning {repo_url}...")
-        Repo.clone_from(repo_url, settings.WORK_DIR)
-        return settings.WORK_DIR
 
+        final_url = repo_url
+        if settings.GITHUB_TOKEN:
+            # トークンがある場合（プライベートリポジトリの場合），URLに埋め込む
+            # https://github.com/... -> https://<TOKEN>@github.com/...
+            if repo_url.startswith("https://"):
+                final_url = repo_url.replace("https://", f"https://{settings.GITHUB_TOKEN}@")
+                print(f"🔐 Authenticated clone enabled for private repo.")
+            else:
+                print("⚠️ Warning: GITHUB_TOKEN provided but URL is not HTTPS. Token ignored.")
+        
+        print(f"📥 Cloning {repo_url}...")
+
+        # ログには生のTokenが出ないように注意しつつ、final_urlでクローン
+        try:
+            # 実際のクローン処理
+            Repo.clone_from(final_url, settings.WORK_DIR)        
+        except Exception as e:
+            # エラーが発生した場合、メッセージの中にトークンが含まれていないかチェックして隠す
+            error_msg = str(e)
+            if settings.GITHUB_TOKEN:
+                # トークン部分を '***' に置換して隠す
+                error_msg = error_msg.replace(settings.GITHUB_TOKEN, "***")
+            
+            print(f"❌ Clone Failed: {error_msg}")
+            raise Exception("Repository clone failed (details in log)") # 詳細を隠して再送出
+    
+        return settings.WORK_DIR
+    
     def analyze_context(self, project_path: Path) -> dict:
         print("🧠 Analyzing source code...")
         # ノイズになるファイルを除外

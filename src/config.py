@@ -3,18 +3,20 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    # AWSリージョン（default ap-northeast-1）
-    AWS_REGION: str = "ap-northeast-1"
+    # AWSリージョン（default us-west-1）
+    AWS_REGION: str = "us-west-1"
     
     # AWSクレデンシャル (任意: Lambdaデプロイ用)
     # ~/.aws/credentials がある場合に自動的に使用
     HAS_AWS_CREDS: bool = (
         os.path.exists(os.path.expanduser("~/.aws/credentials")) or 
         "AWS_ACCESS_KEY_ID" in os.environ or 
-        "AWS_COUNTAINER_CREDENTIALS" in os.environ
+        "AWS_CONTAINER_CREDENTIALS" in os.environ
     )
 
-    LLM_MODEL: str = "claude-3-5-sonnet-20240620"  # LLMモデル名
+    LLM_MODEL: str = ""  # LLMモデル名
+
+    GITHUB_TOKEN: str | None = None # GitHub Personal Access Token (任意)
 
     # ディレクトリ設定
     BASE_DIR: Path = Path(__file__).parent.parent
