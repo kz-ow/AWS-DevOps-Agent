@@ -1,3 +1,4 @@
+import sys
 import textwrap
 from fastmcp import FastMCP
 from config import settings
@@ -25,16 +26,71 @@ def plan_deployment(repo_url: str, target: str = "local") -> str:
         repo_url: GitHubリポジトリURL
         target: 'local' (PCで起動) or 'lambda' (AWSサーバーレス)
     """
-    print(f"🔍 Planning deployment: {repo_url} [{target}]")
+    print(f"🔍 Planning deployment: {repo_url} [{target}]", file=sys.stderr)
     
-    # 解析 & 生成 (まだデプロイしない)
+    # コードの解析
     work_dir = analyzer.clone_repository(repo_url)
     context = analyzer.analyze_context(work_dir)
-    dockerfile = decider.generate_dockerfile(context, 0, "", target)
-    (work_dir / "Dockerfile").write_text(dockerfile)
+
+    # ---  AI⇔静的ツールとの会話 ---
+    print("🤖 Generating & Auditing code...", file=sys.stderr)
+
+    # ==========================================
+    # Phase 1: Dockerfile生成部 
+    # ==========================================
+    dockerfile_errors = ""
+    dockerfile_ok = False
+    
+    print(f"   [1/2] Preparing Dockerfile...", file=sys.stderr)
+    for attempt in range(settings.MAX_RETRIES):
+        # 生成
+        docker_content = decider.generate_dockerfile(context, attempt, dockerfile_errors, target)
+        (work_dir / "Dockerfile").write_text(docker_content)
+        
+        # 監査 (Hadolint / Trivy / AI Logic)
+        violations = decider.audit_dockerfile(docker_content, target)
+        
+        if not violations:
+            print(f"     ✅ Dockerfile passed checks (Attempt {attempt+1})", file=sys.stderr)
+            dockerfile_ok = True
+            break
+        else:
+            print(f"     ⚠️ Dockerfile issues (Attempt {attempt+1}): {len(violations)} found.", file=sys.stderr)
+            dockerfile_errors = "\n".join(violations)
+
+    if not dockerfile_ok:
+        return f"❌ Failed to generate valid Dockerfile after {settings.MAX_RETRIES} attempts.\nErrors:\n{dockerfile_errors}"
+
+    # ==========================================
+    # Phase 2: SAMテンプレート生成部 (Lambdaのみ)
+    # ==========================================
+    if target == "lambda":
+        sam_errors = ""
+        sam_ok = False
+        
+        print(f"   [2/2] Preparing SAM Template...")
+        for attempt in range(settings.MAX_RETRIES):
+            # 生成
+            sam_content = decider.generate_sam_template(context["stack_summary"], sam_errors)
+            (work_dir / "template.yaml").write_text(sam_content)
+            
+            # 監査 (cfn-lint / Checkov)
+            violations = decider.audit_sam_template(sam_content)
+            
+            if not violations:
+                print(f"     ✅ SAM Template passed checks (Attempt {attempt+1})", file=sys.stderr)
+                sam_ok = True
+                break
+            else:
+                print(f"     ⚠️ SAM Template issues (Attempt {attempt+1}): {len(violations)} found.", file=sys.stderr)
+                sam_errors = "\n".join(violations)
+        
+        if not sam_ok:
+             return f"❌ Failed to generate valid SAM Template after {settings.MAX_RETRIES} attempts.\nErrors:\n{sam_errors}"
+
     
     # 図解 (Mermaid)
-    print("🎨 Drawing Architecture Plan...")
+    print("🎨 Drawing Architecture Plan...", file=sys.stderr)
     diagram = LlamaSettings.llm.complete(
         f"Create a mermaid graph TD for a proposed {target} deployment of {context['stack_summary']}. Return ONLY mermaid code."
     ).text.replace("```mermaid", "").replace("```", "").strip()
@@ -65,14 +121,14 @@ def plan_deployment(repo_url: str, target: str = "local") -> str:
 @mcp.tool()
 def apply_deployment(project_name: str, target: str = "local") -> str:
     """ 
-   【Step 2】承認された計画を実行(デプロイ)します。 必ず plan_deployment の後に実行してください。
+   【Step 2】承認された計画を実行(デプロイ)します. 必ず plan_deployment の後に実行してください。
     
     Args:
         project_name: プロジェクト名 (英数字推奨)
         target: 'local' or 'lambda'
     """
 
-    print(f"🚀 Applying deployment: {project_name} [{target}]")
+    print(f"🚀 Applying deployment: {project_name} [{target}]", file=sys.stderr)
     work_dir = settings.WORK_DIR
 
     # 計画ファイル（Dockerfile）の存在確認
@@ -106,13 +162,13 @@ def apply_deployment(project_name: str, target: str = "local") -> str:
 @mcp.tool()
 def destroy_resources(project_name: str, target: str = "local") -> str:
     """
-    【Step 3】デプロイしたリソースを破棄します。
+    【Step 3】デプロイしたリソースを破棄
     
     Args:
         project_name: プロジェクト名
         target: 'local' or 'lambda'
     """
-    print(f"🧹 Destroying resources for: {project_name} [{target}]")
+    print(f"🧹 Destroying resources for: {project_name} [{target}]", file=sys.stderr)
     status_msg = ""
 
     if target == "local":

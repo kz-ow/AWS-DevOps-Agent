@@ -1,171 +1,120 @@
+import subprocess
 import boto3
 import docker
-import base64
-import json
-import time
-import sys # 追加: ログ出力用
+import sys
 from config import settings
 
 class ExecutionEngine:
     def __init__(self):
+        # ローカル実行用のためのDockerクライアント初期化
         self.docker_client = docker.from_env()
-        # AWS設定がある場合のみクライアント初期化
+        
+        # デプロイ後のURL取得をCloudFormation経由で行うためBoto3クライアント初期化
         if settings.HAS_AWS_CREDS:
-            self.ecr = boto3.client('ecr', region_name=settings.AWS_REGION)
-            self.lambda_client = boto3.client('lambda', region_name=settings.AWS_REGION)
-            self.iam = boto3.client('iam')
+            self.cf_client = boto3.client('cloudformation', region_name=settings.AWS_REGION)
 
     # --- Local Mode ---
     def deploy_to_local(self, build_dir: str, project_name: str) -> str:
+        """
+        ローカルPC上でDockerコンテナをビルド・起動する
+        """
+
         tag = f"{project_name}:local"
         container_name = f"{project_name}-dev"
-        
-        print(f"🏠 Local Build & Run: {tag}")
-        # LocalでもAMD64にしておくと互換性が高いが、ローカル実行速度優先ならplatform指定なしでもOK
+        print(f"🏠 Local Build & Run: {tag}", file=sys.stderr)
         self.docker_client.images.build(path=str(build_dir), tag=tag)
         self.cleanup_local(project_name) 
-
         self.docker_client.containers.run(tag, name=container_name, ports={'8080/tcp': 8080}, detach=True)
         return "http://localhost:8080"
 
     def cleanup_local(self, project_name: str) -> str:
+        """
+        ローカルDockerコンテナの停止・削除
+        """
         container_name = f"{project_name}-dev"
         try:
             container = self.docker_client.containers.get(container_name)
-            print(f"🧹 Stopping & Removing local container: {container_name}")
             container.stop()
             container.remove()
             return "✅ Local container destroyed."
         except docker.errors.NotFound:
-            return "⚠️ Container not found (already deleted)."
+            return "⚠️ Container not found."
 
-    # --- Lambda Mode ---
+    # --- Lambda Mode (SAMへ移行) ---
     def build_and_push_lambda(self, build_dir: str, project_name: str) -> str:
-        repo_uri = self._ensure_ecr_repo(project_name)
-        # ECRプッシュ用のタグ
-        tag = f"{repo_uri}:latest"
-        
-        print(f"🐳 Building for Lambda (linux/amd64): {tag}")
-        
-        # 【重要修正1】Lambda用にプラットフォームを linux/amd64 に固定
-        # これをしないと、M1 Mac等で作ったイメージがLambdaで動きません
-        self.docker_client.images.build(
-            path=str(build_dir), 
-            tag=tag,
-            platform="linux/amd64" 
-        )
-        
-        # ECR Login
-        auth = self.ecr.get_authorization_token()['authorizationData'][0]
-        token = base64.b64decode(auth['authorizationToken']).decode('utf-8').split(':')
-        self.docker_client.login(token[0], token[1], registry=repo_uri.split('/')[0])
-        
-        print(f"🚀 Pushing to ECR: {tag}")
-        
-        # 【重要修正2】プッシュの完了を待ち、エラーをチェックする
-        # stream=True, decode=True でログを一行ずつ読み取る
-        push_logs = self.docker_client.images.push(tag, stream=True, decode=True)
-        
-        for line in push_logs:
-            # エラーがある場合は例外を投げる
-            if 'error' in line:
-                error_msg = line['errorDetail']['message']
-                raise Exception(f"❌ Docker Push Failed: {error_msg}")
-            
-            # 進捗を表示 (任意: ログが長くなりすぎるならコメントアウト)
-            if 'status' in line:
-                print(f"  > {line['status']}", end='\r')
-        
-        print(f"\n✅ Push complete: {tag}")
-        return repo_uri
+        """
+        AWS SAMを使用しイメージのビルドとECRへのプッシュを行う。
+        """
 
-    def deploy_to_lambda(self, project_name: str, image_uri: str) -> str:
-        # pushした画像URIにタグをつける
-        image_uri_with_tag = f"{image_uri}:latest"
+        print(f"🔨 Building with AWS SAM...", file=sys.stderr)
         
-        func_name = f"{project_name}-func"
-        role_arn = self._ensure_role("SmartDeployLambdaRole")
-        
-        print(f"⚡ Deploying Function: {func_name}")
+        # 'sam build' コマンドを実行
+        # template.yaml は build_dir に生成されている前提
         try:
-            # 更新処理
-            self.lambda_client.update_function_code(
-                FunctionName=func_name, 
-                ImageUri=image_uri_with_tag, # タグ付きを指定
-                Publish=True
+            subprocess.run(
+                ["sam", "build"], 
+                cwd=str(build_dir), 
+                check=True,
+                capture_output=False  # ログを標準出力に出す
             )
-            
-            # 更新完了を少し待つ (本来はwaiterを使うのがベスト)
-            print("⏳ Waiting for function update...")
-            time.sleep(10)
-            
-        except self.lambda_client.exceptions.ResourceNotFoundException:
-            # 新規作成
-            print("🆕 Creating new function...")
-            # 作成直後はRoleの反映待ちが必要な場合があるためリトライループ推奨だが、簡易的にsleep
-            time.sleep(5) 
-            
-            self.lambda_client.create_function(
-                FunctionName=func_name,
-                PackageType='Image',
-                Code={'ImageUri': image_uri_with_tag}, # タグ付きを指定
-                Role=role_arn,
-                Timeout=30,
-                MemorySize=512,
-                Architectures=['x86_64']
-            )
-            print("⏳ Waiting for function creation...")
-            time.sleep(10)
+        except subprocess.CalledProcessError as e:
+             raise Exception(f"❌ SAM Build Failed: {e}")
 
-        # URL公開設定
+        return "Build Complete (Image will be pushed during deploy)"
+
+    def deploy_to_lambda(self, project_name: str, image_uri: str = None) -> str:
+        """
+        AWS SAMを使用しLambdaへデプロイを実施
+
+        """
+        print(f"🚀 Deploying to AWS Lambda with SAM...", file=sys.stderr)
+        work_dir = settings.WORK_DIR
+
+        # SAM Deploy コマンド
+        cmd = [
+            "sam", "deploy",
+            "--stack-name", project_name,
+            "--resolve-s3",
+            "--resolve-image-repos",
+            "--capabilities", "CAPABILITY_IAM",
+            "--no-confirm-changeset",
+            "--no-fail-on-empty-changeset"
+        ]
+
         try:
-            self.lambda_client.create_function_url_config(
-                FunctionName=func_name, 
-                AuthType='NONE'
-            )
-            self.lambda_client.add_permission(
-                FunctionName=func_name, 
-                StatementId='PublicAccess', 
-                Action='lambda:InvokeFunctionUrl', 
-                Principal='*', 
-                FunctionUrlAuthType='NONE'
-            )
-        except self.lambda_client.exceptions.ResourceConflictException: 
-            pass
-        
-        return self.lambda_client.get_function_url_config(FunctionName=func_name)['FunctionUrl']
+            subprocess.run(cmd, cwd=str(work_dir), check=True)
+            
+            # デプロイ完了後、CloudFormationのOutputsからURLを取得
+            return self._fetch_stack_output(project_name, "FunctionUrl")
+            
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"❌ SAM Deploy Failed: {e}")
 
     def cleanup_lambda(self, project_name: str) -> str:
-        """Lambda関数を削除 (ECRイメージはキャッシュのため残す)"""
-        func_name = f"{project_name}-func"
+        """
+        AWS SAMを使用し、デプロイしたスタックを全て削除
+        """
+
+        print(f"🔥 Destroying Stack: {project_name}", file=sys.stderr)
+        cmd = [
+            "sam", "delete",
+            "--stack-name", project_name,
+            "--no-prompts"
+        ]
         try:
-            print(f"🔥 Deleting Lambda function: {func_name}")
-            self.lambda_client.delete_function(FunctionName=func_name)
-            return f"✅ Lambda function '{func_name}' destroyed."
-        except self.lambda_client.exceptions.ResourceNotFoundException:
-            return "⚠️ Function not found (already deleted)."
+            subprocess.run(cmd, cwd=str(settings.WORK_DIR), check=True)
+            return f"✅ Stack '{project_name}' destroyed."
+        except subprocess.CalledProcessError:
+            return "⚠️ Delete failed or stack not found."
 
-    def _ensure_ecr_repo(self, name):
-        try: 
-            return self.ecr.describe_repositories(repositoryNames=[name])['repositories'][0]['repositoryUri']
-        except self.ecr.exceptions.RepositoryNotFoundException:  
-            return self.ecr.create_repository(repositoryName=name)['repository']['repositoryUri']
-
-    def _ensure_role(self, name):
-        try: 
-            return self.iam.get_role(RoleName=name)['Role']['Arn']
-        except self.iam.exceptions.NoSuchEntityException:
-            policy = json.dumps({
-                "Version": "2012-10-17",
-                "Statement": [{
-                    "Effect": "Allow",
-                    "Principal": {"Service": "lambda.amazonaws.com"},
-                    "Action": "sts:AssumeRole"
-                }]
-            })
-            res = self.iam.create_role(RoleName=name, AssumeRolePolicyDocument=policy)
-            self.iam.attach_role_policy(RoleName=name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
-            # Role作成直後はLambdaが認識できないことがあるので長めに待つ
-            print("⏳ Waiting for IAM Role propagation...")
-            time.sleep(15) 
-            return res['Role']['Arn']
+    def _fetch_stack_output(self, stack_name: str, output_key: str) -> str:
+        """CloudFormationスタックのOutputsから特定の値を取得"""
+        try:
+            response = self.cf_client.describe_stacks(StackName=stack_name)
+            outputs = response['Stacks'][0].get('Outputs', [])
+            for o in outputs:
+                if o['OutputKey'] == output_key:
+                    return o['OutputValue']
+        except Exception as e:
+            print(f"⚠️ Failed to fetch output: {e}", file=sys.stderr)
+        return "URL not found"
