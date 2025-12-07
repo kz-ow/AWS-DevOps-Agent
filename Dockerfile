@@ -31,10 +31,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && curl -sfL --retry 5 https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin \
  && rm -rf /var/lib/apt/lists/*
 
+
+# AWS SAM 静的パッケージのインストール（以降テストのためRUNを分離）
+RUN curl -L "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip" -o "aws-sam-cli.zip" \
+ && unzip aws-sam-cli.zip -d sam-installation \
+ && ./sam-installation/install \
+ && rm -rf aws-sam-cli.zip sam-installation \
+ && rm -rf /var/lib/apt/lists/*
+
+# IaC静的解析ツールのインストール
+RUN pip install cfn-lint checkov
+
 # Pythonパッケージ
 COPY --from=builder /wheels /wheels
 COPY ./requirements.txt .
 RUN pip install --no-index --find-links=/wheels -r requirements.txt && rm -rf /wheels
+
 
 # アプリコード
 COPY src /app/src

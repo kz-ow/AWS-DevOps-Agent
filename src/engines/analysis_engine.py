@@ -1,4 +1,5 @@
 import shutil
+import sys
 from pathlib import Path
 from git import Repo
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings as LlamaSettings
@@ -13,7 +14,7 @@ class AnalysisEngine:
 
     def _initialize_llm(self):
         """AWS Bedrock (API) + Local Embedding"""
-        print(f"🧠 Initializing AI Brain: [ {settings.LLM_MODEL} ]")
+        print(f"🧠 Initializing AI Brain: [ {settings.LLM_MODEL} ]", file=sys.stderr)
 
         try:
             # LLMモデル: AWS Bedrock 
@@ -27,7 +28,7 @@ class AnalysisEngine:
                 region_name=settings.AWS_REGION
             )
         except Exception as e:
-            print(f"❌ AI Init Failed: {e}")
+            print(f"❌ AI Init Failed: {e}", file=sys.stderr)
 
     def _load_rules_index(self):
         if not settings.RULES_DIR.exists(): return None
@@ -44,12 +45,11 @@ class AnalysisEngine:
             # https://github.com/... -> https://<TOKEN>@github.com/...
             if repo_url.startswith("https://"):
                 final_url = repo_url.replace("https://", f"https://{settings.GITHUB_TOKEN}@")
-                print(f"🔐 Authenticated clone enabled for private repo.")
+                print(f"🔐 Authenticated clone enabled for private repo.", file=sys.stderr)
             else:
-                print("⚠️ Warning: GITHUB_TOKEN provided but URL is not HTTPS. Token ignored.")
+                print("⚠️ Warning: GITHUB_TOKEN provided but URL is not HTTPS. Token ignored.", file=sys.stderr)
         
-        print(f"📥 Cloning {repo_url}...")
-
+        print(f"📥 Cloning {repo_url}...", file=sys.stderr)
         # ログには生のTokenが出ないように注意しつつ、final_urlでクローン
         try:
             # 実際のクローン処理
@@ -61,13 +61,13 @@ class AnalysisEngine:
                 # トークン部分を '***' に置換して隠す
                 error_msg = error_msg.replace(settings.GITHUB_TOKEN, "***")
             
-            print(f"❌ Clone Failed: {error_msg}")
+            print(f"❌ Clone Failed: {error_msg}", file=sys.stderr)
             raise Exception("Repository clone failed (details in log)") # 詳細を隠して再送出
     
         return settings.WORK_DIR
     
     def analyze_context(self, project_path: Path) -> dict:
-        print("🧠 Analyzing source code...")
+        print("🧠 Analyzing source code...", file=sys.stderr)
         # ノイズになるファイルを除外
         documents = SimpleDirectoryReader(
             input_dir=str(project_path), recursive=True, 
@@ -80,7 +80,7 @@ class AnalysisEngine:
         stack_info = str(index.as_query_engine().query(
             "Identify the programming language, framework, and entry point file. List key dependencies."
         ))
-        print(f"🧐 Detected Stack: {stack_info}")
+        print(f"🧐 Detected Stack: {stack_info}", file=sys.stderr)
 
         # ルール検索
         security_context = "Standard best practices."

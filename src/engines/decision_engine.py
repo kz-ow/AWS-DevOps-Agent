@@ -2,13 +2,14 @@ import subprocess
 import tempfile
 import os
 import json
+import sys
 from llama_index.core import Settings as LlamaSettings
 
 class DecisionEngine:
     def generate_dockerfile(self, context: dict, attempt: int, error_msg: str, target_service: str) -> str:
         """
-        コンテキストとターゲット環境に基づいてDockerfileを生成する。
-        ターゲットがAWS Lambdaなので，AWS Lambda Web Adapterの追加を指示する。
+        コンテキストとターゲット環境に基づいてLLMでDockerfileを生成
+        ターゲットがAWS Lambdaの場合，AWS Lambda Web Adapterの追加を指示
         """
         stack = context.get('stack_summary', 'Unknown Stack')
         rules = context.get('security_context', 'Standard best practices')
@@ -26,7 +27,7 @@ class DecisionEngine:
         {error_msg if error_msg else "None (First attempt)"}
         """
 
-        # ★ Lambda対応: AWS Lambda Web Adapter の自動注入
+        # Lambda対応: AWS Lambda Web Adapter の自動注入
         if target_service == "lambda":
             prompt += """
             \n[IMPORTANT: AWS Lambda Deployment]
@@ -42,12 +43,43 @@ class DecisionEngine:
         # LLMに生成させる
         response = LlamaSettings.llm.complete(prompt)
         return response.text.replace("```dockerfile", "").replace("```", "").strip()
-
-    def symbolic_audit(self, content: str, service: str) -> list[str]:
+    
+    def generate_sam_template(self, project_name: str, error_msg: str = "") -> str:
         """
-        生成されたDockerfileを一時ファイルに保存し、
-        Hadolint (Lint) と Trivy (脆弱性スキャン) を実行して監査を行う。
-        ツールで検知できない論理エラーはAIが最終確認する。
+        LLMでAWS SAMテンプレートを生成
+        SAMによる自動ビルドを利用するため、ImageUriは指定せずMetadataを付与するよう指示
+        """
+        
+        prompt = f"""
+        You are an AWS DevOps Expert. Generate an AWS SAM template (template.yaml) for a serverless application.
+        
+        [Project Name]
+        {project_name}
+        
+        [Requirements]
+        1. Create a Lambda function resource ('AWS::Serverless::Function').
+        2. Use 'PackageType: Image'.
+        3. DO NOT specify 'ImageUri'. Instead, use the 'Metadata' section to configure the build:
+           - Dockerfile: Dockerfile
+           - DockerContext: .
+           - DockerTag: latest
+        4. Enable a public Function URL (AuthType: NONE).
+        5. Add 'AWSLambdaBasicExecutionRole' to Policies.
+        6. Output the Function URL in the 'Outputs' section.
+        7. Set MemorySize to 512 and Timeout to 30.
+        8. Architecture should be x86_64.
+
+        Output ONLY the SAM template content in YAML format. No markdown code blocks, no explanations.
+        """
+        
+        response = LlamaSettings.llm.complete(prompt)
+        return response.text.replace("```yaml", "").replace("```", "").strip()
+
+    def audit_dockerfile(self, content: str, service: str) -> list[str]:
+        """
+        生成されたDockerfileを一時ファイルに保存
+        Hadolint (Lint) と Trivy (脆弱性スキャン) を実行して監査
+        ツールで検知できない論理エラーはAIが最終確認
         """
         violations = []
 
@@ -71,7 +103,7 @@ class DecisionEngine:
                         if err['level'] in ['error', 'warning']:
                             violations.append(f"[Hadolint] {err['code']}: {err['message']} (Line {err['line']})")
             except FileNotFoundError:
-                print("⚠️ Hadolint not installed. Skipping lint check.")
+                print("⚠️ Hadolint not installed. Skipping lint check.", file=sys.stderr)
             except json.JSONDecodeError:
                 pass
 
@@ -94,7 +126,7 @@ class DecisionEngine:
                                 for misconf in res['Misconfigurations']:
                                     violations.append(f"[Trivy] {misconf['ID']}: {misconf['Description']}")
             except FileNotFoundError:
-                print("⚠️ Trivy not installed. Skipping security scan.")
+                print("⚠️ Trivy not installed. Skipping security scan.", file=sys.stderr)
             except json.JSONDecodeError:
                 pass
 
@@ -118,4 +150,58 @@ class DecisionEngine:
             if "PASS" not in res:
                 violations.append(f"[AI Logic Check] {res}")
 
+        return violations
+    
+
+    def audit_sam_template(self, template_content: str) -> list[str]:
+        """
+        SAMテンプレートの静的解析 (cfn-lint & Checkov/Trivy)
+        """
+        violations = []
+        
+        # 一時ファイル作成
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+            tmp.write(template_content)
+            tmp_path = tmp.name
+
+        try:
+            # --- 1. cfn-lint (構文チェック) ---
+            # AWS公式のバリデータ。必須パラメータ不足などを検知
+            res = subprocess.run(
+                ['cfn-lint', '--format', 'json', tmp_path],
+                capture_output=True, text=True
+            )
+            
+            # cfn-lintはエラーがあるとき非0を返す
+            if res.stdout:
+                try:
+                    errors = json.loads(res.stdout)
+                    for err in errors:
+                        violations.append(f"[cfn-lint] {err['Level']}: {err['Message']} (Line {err['Location']['Start']['LineNumber']})")
+                except json.JSONDecodeError:
+                    pass
+
+            # --- 2. Trivy (セキュリティスキャン) ---
+            # TrivyはIaCスキャン機能を持っています
+            trivy_cmd = [
+                'trivy', 'config',
+                '--format', 'json',
+                '--severity', 'HIGH,CRITICAL',
+                tmp_path
+            ]
+            res = subprocess.run(trivy_cmd, capture_output=True, text=True)
+            if res.stdout:
+                try:
+                    scan_result = json.loads(res.stdout)
+                    if 'Results' in scan_result:
+                        for r in scan_result['Results']:
+                            if 'Misconfigurations' in r:
+                                for m in r['Misconfigurations']:
+                                    violations.append(f"[Trivy IaC] {m['ID']}: {m['Description']}")
+                except json.JSONDecodeError:
+                    pass
+
+        finally:
+            os.remove(tmp_path)
+            
         return violations
